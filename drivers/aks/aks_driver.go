@@ -14,10 +14,17 @@ import (
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/Azure/go-autorest/autorest/utils"
+	"github.com/rancher/kontainer-engine/drivers"
+	"github.com/rancher/kontainer-engine/store"
 	"github.com/rancher/kontainer-engine/types"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 type Driver struct {
@@ -263,7 +270,7 @@ func newAzureClient(state state) (*containerservice.ManagedClustersClient, error
 	authorizer, err := utils.GetAuthorizer(azure.PublicCloud)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error acquiring authorizer: %v", err)
 	}
 
 	baseURL := state.BaseURL
@@ -280,6 +287,7 @@ func newAzureClient(state state) (*containerservice.ManagedClustersClient, error
 const failedStatus = "Failed"
 const succeededStatus = "Succeeded"
 const creatingStatus = "Creating"
+const updatingStatus = "Updating"
 
 const pollInterval = 30
 
@@ -377,14 +385,10 @@ func (d *Driver) Create(ctx context.Context, options *types.DriverOptions) (*typ
 			info := &types.ClusterInfo{}
 			err := storeState(info, driverState)
 
-			fmt.Println("********")
-			fmt.Println(info.Metadata["state"])
-			fmt.Println("********")
-
 			return info, err
 		}
 
-		if state != creatingStatus {
+		if state != creatingStatus && state != updatingStatus {
 			return nil, fmt.Errorf("unexpected state %v", state)
 		}
 
@@ -536,47 +540,6 @@ func (d *Driver) SetClusterSize(ctx context.Context, info *types.ClusterInfo, si
 	return nil
 }
 
-// KubeConfig struct for marshalling config files
-// shouldn't have to reimplement this but kubernetes' model won't serialize correctly for some reason
-type KubeConfig struct {
-	APIVersion string    `yaml:"apiVersion"`
-	Kind       string    `yaml:"kind"`
-	Clusters   []Cluster `yaml:"clusters"`
-	Contexts   []Context `yaml:"contexts"`
-	Users      []User    `yaml:"users"`
-}
-
-type Cluster struct {
-	Name        string      `yaml:"name"`
-	ClusterInfo ClusterInfo `yaml:"cluster"`
-}
-
-type ClusterInfo struct {
-	Server                   string `yaml:"server"`
-	CertificateAuthorityData string `yaml:"certificate-authority-data"`
-}
-
-type Context struct {
-	ContextInfo ContextInfo `yaml:"context"`
-	Name        string      `yaml:"name"`
-}
-
-type ContextInfo struct {
-	Cluster string `yaml:"cluster"`
-	User    string `yaml:"user"`
-}
-
-type User struct {
-	UserInfo UserInfo `yaml:"user"`
-	Name     string   `yaml:"name"`
-}
-
-type UserInfo struct {
-	ClientCertificateData string `yaml:"client-certificate-data"`
-	ClientKeyData         string `yaml:"client-key-data"`
-	Token                 string `yaml:"token"`
-}
-
 func (d *Driver) PostCheck(ctx context.Context, info *types.ClusterInfo) (*types.ClusterInfo, error) {
 	state, err := getState(info)
 
@@ -593,35 +556,99 @@ func (d *Driver) PostCheck(ctx context.Context, info *types.ClusterInfo) (*types
 	result, err := client.GetAccessProfiles(context.Background(), state.ResourceGroup, state.Name, "clusterUser")
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error getting access profile: %v", err)
 	}
 
 	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(*result.KubeConfig)))
 	l, err := base64.StdEncoding.Decode(decoded, []byte(*result.KubeConfig))
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error decoding kube config: %v", err)
 	}
 
-	clusterConfig := KubeConfig{}
+	clusterConfig := store.KubeConfig{}
 	err = yaml.Unmarshal(decoded[:l], &clusterConfig)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error unmarshaling cluster config: %v", err)
 	}
 
 	singleCluster := clusterConfig.Clusters[0]
 	singleUser := clusterConfig.Users[0]
 
 	info.Version = clusterConfig.APIVersion
-	info.Endpoint = singleCluster.ClusterInfo.Server
-	info.Username = state.AdminUsername
-	info.Password = singleUser.UserInfo.Token
-	info.RootCaCertificate = singleCluster.ClusterInfo.CertificateAuthorityData
-	info.ClientCertificate = singleUser.UserInfo.ClientCertificateData
-	info.ClientKey = singleUser.UserInfo.ClientKeyData
+	info.Endpoint = singleCluster.Cluster.Server
+	info.RootCaCertificate = singleCluster.Cluster.CertificateAuthorityData
+	info.ServiceAccountToken, err = generateServiceAccountTokenForAks(&singleCluster, &singleUser)
+
+	if err != nil {
+		return nil, err
+	}
 
 	return info, nil
+}
+
+func generateServiceAccountTokenForAks(cluster *store.ConfigCluster, user *store.ConfigUser) (string, error) {
+	capem, err := base64.StdEncoding.DecodeString(cluster.Cluster.CertificateAuthorityData)
+	if err != nil {
+		return "", fmt.Errorf("error decoding CA cert: %v", err)
+	}
+	host := cluster.Cluster.Server
+	if !strings.HasPrefix(host, "https://") {
+		host = fmt.Sprintf("https://%s", host)
+	}
+	// in here we have to use http basic auth otherwise we can't get the permission to create cluster role
+	config := &rest.Config{
+		Host: host,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: capem,
+		},
+		BearerToken: user.User.Token,
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset: %v", err)
+	}
+
+	serviceAccount := &v1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: drivers.NetesDefault,
+		},
+	}
+
+	var failedCount = 0
+
+	for failedCount < 3 {
+		_, err := clientset.CoreV1().ServiceAccounts(drivers.DefaultNamespace).Create(serviceAccount)
+
+		if err != nil && errors.IsServerTimeout(err) {
+			failedCount = failedCount + 1
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		if err != nil && !errors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("error creating service account: %v", err)
+		}
+
+		break
+	}
+
+	if serviceAccount, err = clientset.CoreV1().ServiceAccounts(drivers.DefaultNamespace).Get(serviceAccount.Name, metav1.GetOptions{}); err != nil {
+		return "", fmt.Errorf("error getting service account: %v", err)
+	}
+
+	if len(serviceAccount.Secrets) > 0 {
+		secret := serviceAccount.Secrets[0]
+		secretObj, err := clientset.CoreV1().Secrets(drivers.DefaultNamespace).Get(secret.Name, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("error getting secrets: %v", err)
+		}
+		if token, ok := secretObj.Data["token"]; ok {
+			return string(token), nil
+		}
+	}
+	return "", fmt.Errorf("failed to configure serviceAccountToken")
 }
 
 // Remove implements driver interface

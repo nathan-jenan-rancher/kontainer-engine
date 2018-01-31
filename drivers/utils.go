@@ -13,27 +13,27 @@ import (
 )
 
 const (
-	defaultNamespace = "default"
-	clusterAdmin     = "cluster-admin"
-	netesDefault     = "netes-default"
+	DefaultNamespace = "default"
+	ClusterAdmin     = "cluster-admin"
+	NetesDefault     = "netes-default"
 )
 
 // GenerateServiceAccountToken generate a serviceAccountToken for clusterAdmin given a rest clientset
 func GenerateServiceAccountToken(clientset *kubernetes.Clientset) (string, error) {
 	serviceAccount := &v1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: netesDefault,
+			Name: NetesDefault,
 		},
 	}
 
-	_, err := clientset.CoreV1().ServiceAccounts(defaultNamespace).Create(serviceAccount)
+	_, err := clientset.CoreV1().ServiceAccounts(DefaultNamespace).Create(serviceAccount)
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return "", err
 	}
 
 	adminRole := &v1beta1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: clusterAdmin,
+			Name: ClusterAdmin,
 		},
 		Rules: []v1beta1.PolicyRule{
 			{
@@ -47,7 +47,7 @@ func GenerateServiceAccountToken(clientset *kubernetes.Clientset) (string, error
 			},
 		},
 	}
-	clusterAdminRole, err := clientset.RbacV1beta1().ClusterRoles().Get(clusterAdmin, metav1.GetOptions{})
+	clusterAdminRole, err := clientset.RbacV1beta1().ClusterRoles().Get(ClusterAdmin, metav1.GetOptions{})
 	if err != nil {
 		clusterAdminRole, err = clientset.RbacV1beta1().ClusterRoles().Create(adminRole)
 		if err != nil {
@@ -77,13 +77,13 @@ func GenerateServiceAccountToken(clientset *kubernetes.Clientset) (string, error
 		return "", err
 	}
 
-	if serviceAccount, err = clientset.CoreV1().ServiceAccounts(defaultNamespace).Get(serviceAccount.Name, metav1.GetOptions{}); err != nil {
+	if serviceAccount, err = clientset.CoreV1().ServiceAccounts(DefaultNamespace).Get(serviceAccount.Name, metav1.GetOptions{}); err != nil {
 		return "", err
 	}
 
 	if len(serviceAccount.Secrets) > 0 {
 		secret := serviceAccount.Secrets[0]
-		secretObj, err := clientset.CoreV1().Secrets(defaultNamespace).Get(secret.Name, metav1.GetOptions{})
+		secretObj, err := clientset.CoreV1().Secrets(DefaultNamespace).Get(secret.Name, metav1.GetOptions{})
 		if err != nil {
 			return "", err
 		}
