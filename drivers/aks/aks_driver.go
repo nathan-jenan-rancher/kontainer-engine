@@ -20,9 +20,6 @@ import (
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -593,6 +590,17 @@ func generateServiceAccountTokenForAks(cluster *store.ConfigCluster, user *store
 	if err != nil {
 		return "", fmt.Errorf("error decoding CA cert: %v", err)
 	}
+
+	keyBytes, err := base64.StdEncoding.DecodeString(user.User.ClientKey)
+	if err != nil {
+		return "", fmt.Errorf("error decoding CA cert: %v", err)
+	}
+
+	certBytes, err := base64.StdEncoding.DecodeString(user.User.ClientCertificate)
+	if err != nil {
+		return "", fmt.Errorf("error decoding CA cert: %v", err)
+	}
+
 	host := cluster.Cluster.Server
 	if !strings.HasPrefix(host, "https://") {
 		host = fmt.Sprintf("https://%s", host)
@@ -601,7 +609,9 @@ func generateServiceAccountTokenForAks(cluster *store.ConfigCluster, user *store
 	config := &rest.Config{
 		Host: host,
 		TLSClientConfig: rest.TLSClientConfig{
-			CAData: capem,
+			CAData:   capem,
+			KeyData:  keyBytes,
+			CertData: certBytes,
 		},
 		BearerToken: user.User.Token,
 	}
@@ -610,45 +620,7 @@ func generateServiceAccountTokenForAks(cluster *store.ConfigCluster, user *store
 		return "", fmt.Errorf("error creating clientset: %v", err)
 	}
 
-	serviceAccount := &v1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: drivers.NetesDefault,
-		},
-	}
-
-	var failedCount = 0
-
-	for failedCount < 3 {
-		_, err := clientset.CoreV1().ServiceAccounts(drivers.DefaultNamespace).Create(serviceAccount)
-
-		if err != nil && errors.IsServerTimeout(err) {
-			failedCount = failedCount + 1
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		if err != nil && !errors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("error creating service account: %v", err)
-		}
-
-		break
-	}
-
-	if serviceAccount, err = clientset.CoreV1().ServiceAccounts(drivers.DefaultNamespace).Get(serviceAccount.Name, metav1.GetOptions{}); err != nil {
-		return "", fmt.Errorf("error getting service account: %v", err)
-	}
-
-	if len(serviceAccount.Secrets) > 0 {
-		secret := serviceAccount.Secrets[0]
-		secretObj, err := clientset.CoreV1().Secrets(drivers.DefaultNamespace).Get(secret.Name, metav1.GetOptions{})
-		if err != nil {
-			return "", fmt.Errorf("error getting secrets: %v", err)
-		}
-		if token, ok := secretObj.Data["token"]; ok {
-			return string(token), nil
-		}
-	}
-	return "", fmt.Errorf("failed to configure serviceAccountToken")
+	return drivers.GenerateServiceAccountToken(clientset)
 }
 
 // Remove implements driver interface
