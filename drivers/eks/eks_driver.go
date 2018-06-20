@@ -298,6 +298,15 @@ func (d *Driver) createStack(svc *cloudformation.CloudFormation, name string, di
 				}
 			}
 		}
+
+		// delete the stack so subsequent `Create` calls can succeed
+		_, err = svc.DeleteStack(&cloudformation.DeleteStackInput{
+			StackName: aws.String(name),
+		})
+		if err != nil {
+			logrus.Warnf("stack failed to delete, cluster is in unrecoverable state: %v", err)
+		}
+
 		return nil, fmt.Errorf("stack failed to create: %v", reason)
 	}
 
