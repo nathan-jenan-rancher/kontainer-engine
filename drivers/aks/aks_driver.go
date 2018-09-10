@@ -27,6 +27,8 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const httpRoutingAddonKey = "httpApplicationRouting"
+
 type Driver struct {
 	driverCapabilities types.Capabilities
 }
@@ -229,6 +231,7 @@ func getStateFromOptions(driverOptions *types.DriverOptions) (state, error) {
 			state.Tag[kv[0]] = kv[1]
 		}
 	}
+	state.HTTPApplicationRouting = options.GetValueFromDriverOptions(driverOptions, types.BoolPointerType, "httpApplicationRouting", "http-application-routing").(*bool)
 	return state, state.validate()
 }
 
@@ -457,6 +460,12 @@ func (d *Driver) createOrUpdate(ctx context.Context, options *types.DriverOption
 			DockerBridgeCidr: to.StringPtr(driverState.DockerBridgeCIDR),
 			ServiceCidr:      to.StringPtr(driverState.ServiceCIDR),
 			NetworkPlugin:    containerservice.Azure,
+		}
+	}
+
+	if driverState.HTTPApplicationRouting == nil || *driverState.HTTPApplicationRouting {
+		managedCluster.AddonProfiles[httpRoutingAddonKey] = &containerservice.ManagedClusterAddonProfile{
+			Enabled: to.BoolPtr(true),
 		}
 	}
 
