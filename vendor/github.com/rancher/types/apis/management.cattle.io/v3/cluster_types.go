@@ -211,9 +211,10 @@ type AzureKubernetesServiceConfig struct {
 	// The resource group that the virtual network is in.  If omited it is assumed to match the resource group of the cluster
 	VirtualNetworkResourceGroup string `json:"virtualNetworkResourceGroup,omitempty"`
 	// Additional options for setting a custom virtual network
-	ServiceCIDR      string `json:"serviceCidr,omitempty"`
-	DNSServiceIP     string `json:"dnsServiceIp,omitempty"`
-	DockerBridgeCIDR string `json:"dockerBridgeCidr,omitempty"`
+	ServiceCIDR            string `json:"serviceCidr,omitempty"`
+	DNSServiceIP           string `json:"dnsServiceIp,omitempty"`
+	DockerBridgeCIDR       string `json:"dockerBridgeCidr,omitempty"`
+	HTTPApplicationRouting *bool  `json:"httpApplicationRouting,omitempty"`
 }
 
 type AmazonElasticContainerServiceConfig struct {

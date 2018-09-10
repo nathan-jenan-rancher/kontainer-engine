@@ -402,6 +402,15 @@ func (in *AzureKubernetesServiceConfig) DeepCopyInto(out *AzureKubernetesService
 			(*out)[key] = val
 		}
 	}
+	if in.HTTPApplicationRouting != nil {
+		in, out := &in.HTTPApplicationRouting, &out.HTTPApplicationRouting
+		if *in == nil {
+			*out = nil
+		} else {
+			*out = new(bool)
+			**out = **in
+		}
+	}
 	return
 }
 
