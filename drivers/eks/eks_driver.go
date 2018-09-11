@@ -247,10 +247,10 @@ func alreadyExistsInCloudFormationError(err error) bool {
 }
 
 func (d *Driver) createStack(svc *cloudformation.CloudFormation, name string, displayName string,
-	templateURL string, parameters []*cloudformation.Parameter) (*cloudformation.DescribeStacksOutput, error) {
+	templateBody string, parameters []*cloudformation.Parameter) (*cloudformation.DescribeStacksOutput, error) {
 	_, err := svc.CreateStack(&cloudformation.CreateStackInput{
-		StackName:   aws.String(name),
-		TemplateURL: aws.String(templateURL),
+		StackName:    aws.String(name),
+		TemplateBody: aws.String(templateBody),
 		Capabilities: aws.StringSlice([]string{
 			cloudformation.CapabilityCapabilityIam,
 		}),
@@ -374,8 +374,7 @@ func (d *Driver) Create(ctx context.Context, options *types.DriverOptions, _ *ty
 	if state.VirtualNetwork == "" {
 		logrus.Infof("Bringing up vpc")
 
-		stack, err := d.createStack(svc, getVPCStackName(state), displayName,
-			"https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-06-05/amazon-eks-vpc-sample.yaml",
+		stack, err := d.createStack(svc, getVPCStackName(state), displayName, vpcTemplate,
 			[]*cloudformation.Parameter{})
 		if err != nil {
 			return nil, fmt.Errorf("error creating stack: %v", err)
@@ -415,8 +414,7 @@ func (d *Driver) Create(ctx context.Context, options *types.DriverOptions, _ *ty
 	if state.ServiceRole == "" {
 		logrus.Infof("Creating service role")
 
-		stack, err := d.createStack(svc, getServiceRoleName(state), displayName,
-			"https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-06-05/amazon-eks-service-role.yaml", nil)
+		stack, err := d.createStack(svc, getServiceRoleName(state), displayName, serviceRoleTemplate, nil)
 		if err != nil {
 			return nil, fmt.Errorf("error creating stack: %v", err)
 		}
@@ -480,8 +478,7 @@ func (d *Driver) Create(ctx context.Context, options *types.DriverOptions, _ *ty
 
 	logrus.Infof("Creating worker nodes")
 
-	stack, err := d.createStack(svc, getWorkNodeName(state), displayName,
-		"https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-06-05/amazon-eks-nodegroup.yaml",
+	stack, err := d.createStack(svc, getWorkNodeName(state), displayName, workerNodesTemplate,
 		[]*cloudformation.Parameter{
 			{ParameterKey: aws.String("ClusterName"), ParameterValue: aws.String(state.ClusterName)},
 			{ParameterKey: aws.String("ClusterControlPlaneSecurityGroup"),
